@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,7 +14,11 @@ import (
 	"time"
 
 	"github.com/piotrbelina/go-rest-api-template/internal/server"
+	"go.opentelemetry.io/contrib/bridges/otelslog"
+	"go.opentelemetry.io/otel"
 )
+
+const name = "github.com/piotrbelina/go-rest-api-template"
 
 func main() {
 	ctx := context.Background()
@@ -23,12 +28,24 @@ func main() {
 	}
 }
 
-func run(ctx context.Context, w io.Writer, args []string) error {
+func run(ctx context.Context, w io.Writer, args []string) (err error) {
 	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt)
 	defer cancel()
 
-	logger := slog.New(slog.NewTextHandler(w, nil))
-	srv := server.NewServer(logger)
+	otelShutdown, err := server.SetupOTelSDK(ctx)
+	if err != nil {
+		return
+	}
+	// Handle shutdown properly so nothing leaks.
+	defer func() {
+		err = errors.Join(err, otelShutdown(context.Background()))
+	}()
+
+	// logger := slog.New(slog.NewTextHandler(w, nil))
+	logger := otelslog.NewLogger(name)
+	tracer := otel.Tracer(name)
+	meter := otel.Meter(name)
+	srv := server.NewServer(logger, tracer, meter)
 
 	config := &server.Config{
 		Host: "",
@@ -36,8 +53,11 @@ func run(ctx context.Context, w io.Writer, args []string) error {
 	}
 
 	s := http.Server{
-		Addr:    net.JoinHostPort(config.Host, config.Port),
-		Handler: srv,
+		Addr:         net.JoinHostPort(config.Host, config.Port),
+		Handler:      srv,
+		BaseContext:  func(_ net.Listener) context.Context { return ctx },
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
 	}
 
 	go func() {
@@ -55,10 +75,10 @@ func run(ctx context.Context, w io.Writer, args []string) error {
 		shutdownCtx := context.Background()
 		shutdownCtx, cancel := context.WithTimeout(shutdownCtx, 10*time.Second)
 		defer cancel()
-		if err := s.Shutdown(shutdownCtx); err != nil {
+		if err = s.Shutdown(shutdownCtx); err != nil {
 			fmt.Fprintf(os.Stderr, "error shutting down http server: %s\n", err)
 		}
 	}()
 	wg.Wait()
-	return nil
+	return
 }
