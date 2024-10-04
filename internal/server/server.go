@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/piotrbelina/go-rest-api-template/api"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -20,8 +21,6 @@ type Config struct {
 }
 
 var (
-	// 	tracer  = otel.Tracer(name)
-	// 	meter   = otel.Meter(name)
 	rollCnt metric.Int64Counter
 )
 
@@ -59,20 +58,20 @@ func handleRolldice(logger *slog.Logger, tracer trace.Tracer, meter metric.Meter
 }
 
 func NewServer(logger *slog.Logger, tracer trace.Tracer, meter metric.Meter) http.Handler {
-	mux := http.NewServeMux()
+	mux := &MyMux{}
 
-	// handleFunc is a replacement for mux.HandleFunc
-	// which enriches the handler's HTTP instrumentation with the pattern as the http.route.
-	handleFunc := func(pattern string, handlerFunc func(http.ResponseWriter, *http.Request)) {
-		// Configure the "http.route" for the HTTP instrumentation.
-		handler := otelhttp.WithRouteTag(pattern, http.HandlerFunc(handlerFunc))
-		mux.Handle(pattern, handler)
-	}
+	server := api.NewServer(logger, tracer, meter)
 
-	handleFunc("/", handleRolldice(logger, tracer, meter))
+	h := api.HandlerFromMux(server, mux)
 
-	// Add HTTP instrumentation for the whole server.
-	handler := otelhttp.NewHandler(mux, "/")
+	return h
+}
 
-	return handler
+type MyMux struct {
+	http.ServeMux
+}
+
+func (r *MyMux) HandleFunc(pattern string, h func(http.ResponseWriter, *http.Request)) {
+	handler := otelhttp.WithRouteTag(pattern, http.HandlerFunc(h))
+	r.Handle(pattern, handler)
 }
